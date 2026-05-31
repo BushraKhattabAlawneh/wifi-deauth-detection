@@ -379,10 +379,12 @@ Table~\ref{tab:results_main} shows how each detector performed under attack scen
 \caption{Detection Rate and Latency}
 \label{tab:results_main}
 \centering
-\small
+\footnotesize
 \begin{tabular}{@{}llcccc@{}}
 \toprule
-\textbf{Platform} & \textbf{Detector} & \textbf{T1 DR} & \textbf{T1 Lat.} & \textbf{T2 DR} & \textbf{T2 Lat.} \\
+& & \multicolumn{2}{c}{\textbf{T1 (High)}} & \multicolumn{2}{c}{\textbf{T2 (Medium)}} \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6}
+\textbf{Plat.} & \textbf{Detector} & DR & Lat. & DR & Lat. \\
 \midrule
 RPi & Threshold & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
 RPi & Statistical & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
