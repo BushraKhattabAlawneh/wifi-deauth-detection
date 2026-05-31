@@ -1,0 +1,461 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{subcaption}
+
+% Placeholder command for TODO items
+\newcommand{\placeholder}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+\begin{document}
+
+\title{Real-Time Detection of Wi-Fi Deauthentication Attacks on Low-Cost Hardware: A Comparative Evaluation}
+
+\author{
+\IEEEauthorblockN{Bushra Khattab Alawneh}
+\IEEEauthorblockA{
+Department of Computer Science\\
+Princess Sumaya University for Technology\\
+Amman, Jordan\\
+bus20258171@std.psut.edu.jo
+}
+}
+
+\maketitle
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\begin{abstract}
+Wi-Fi deauthentication attacks exploit the unprotected nature of IEEE 802.11 management frames to forcibly disconnect clients from access points, enabling denial-of-service and facilitating credential capture through WPA handshake interception. Despite the severity of this threat, existing detection solutions either rely on expensive enterprise infrastructure or lack rigorous empirical evaluation. In this paper, we present a comparative evaluation of two detection approaches---threshold-based and statistical (z-score) anomaly detection---implemented on low-cost hardware platforms: a Raspberry Pi Zero W and an ESP32 microcontroller. Unlike prior work that relies on synthetic traffic or evaluates a single method in isolation, we test our detectors against a real automated attacker (Pwnagotchi) under five controlled scenarios of varying intensity, including evasion attempts with reduced attack rates. We report detection rate, false positive rate, detection latency, evasion boundaries, and resource consumption for each approach on each platform. Our results demonstrate that \placeholder{summarize key finding: e.g., the statistical detector achieves X\% detection rate with Y seconds latency while consuming Z MB RAM on the RPi}. We characterize the evasion threshold below which each approach fails and discuss practical deployment implications for resource-constrained environments.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Wi-Fi security, deauthentication attack, intrusion detection, anomaly detection, Raspberry Pi, ESP32, low-cost hardware, IEEE 802.11
+\end{IEEEkeywords}
+
+% ============================================================
+% I. INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+The IEEE 802.11 standard governs the vast majority of wireless local area network (WLAN) communications worldwide. While data frames in modern Wi-Fi networks benefit from strong encryption through WPA2 and WPA3, management frames---including authentication, association, and deauthentication frames---remain largely unprotected in networks that do not implement Protected Management Frames (PMF/802.11w)~\cite{ieee80211w}. This architectural vulnerability enables deauthentication attacks, wherein an adversary forges management frames to forcibly disconnect legitimate clients from their associated access point.
+
+Deauthentication attacks serve as both a standalone denial-of-service vector and a precursor to more sophisticated attacks. Tools such as Pwnagotchi~\cite{pwnagotchi} automate the process: by sending targeted deauthentication frames and capturing the resulting WPA handshakes when clients attempt to reconnect, an attacker can subsequently perform offline dictionary attacks against the network passphrase. The proliferation of low-cost attack platforms---from dedicated hardware like the Wi-Fi Pineapple to software tools running on commodity single-board computers---has made these attacks trivially accessible.
+
+Despite the severity and accessibility of this threat, detection mechanisms remain underdeveloped for resource-constrained environments. Enterprise wireless intrusion detection systems (WIDS) such as Cisco's Adaptive Wireless IPS can detect deauthentication floods, but these solutions require dedicated infrastructure costing thousands of dollars and are impractical for home networks, small businesses, and IoT deployments. On the other end of the spectrum, hobbyist projects~\cite{spacehuhn_detector} demonstrate basic frame counting on microcontrollers but lack rigorous evaluation, comparative analysis, and evasion testing.
+
+The academic literature offers limited guidance. Existing studies either evaluate detection on standard laptops~\cite{ieee2023_deauth_ml} (ignoring hardware constraints), use synthetic traffic~\cite{nature2025_deauth} (missing realistic attack patterns), or implement a single detection method without comparison~\cite{ijert2024_deauth}. No prior work provides a head-to-head comparison of detection approaches on constrained hardware tested against a real automated attacker with systematic evasion analysis.
+
+\subsection{Contributions}
+
+This paper makes the following contributions:
+
+\begin{enumerate}
+    \item We implement and evaluate two detection approaches---threshold-based and statistical (z-score) anomaly detection---on two low-cost platforms: Raspberry Pi Zero W (\$15) and ESP32 (\$5).
+    \item We conduct the first evaluation against a real automated attacker (Pwnagotchi) rather than synthetic or replayed traffic, capturing realistic attack timing and channel behavior.
+    \item We systematically characterize the evasion boundary of each approach by progressively reducing attack intensity, identifying the minimum attack rate that still triggers detection.
+    \item We report comprehensive metrics including detection rate, false positive rate, detection latency, and resource consumption (CPU, RAM) across five controlled test scenarios.
+    \item We provide open-source implementations for both platforms to facilitate reproducibility.\footnote{\url{https://github.com/BushraKhattabAlawneh/wifi-deauth-detection}}
+\end{enumerate}
+
+The remainder of this paper is organized as follows: Section~\ref{sec:background} provides necessary background on 802.11 management frames and deauthentication attacks. Section~\ref{sec:related} surveys related work. Section~\ref{sec:design} describes our system design and detection approaches. Section~\ref{sec:setup} details the experimental setup. Section~\ref{sec:results} presents results. Section~\ref{sec:discussion} discusses implications and limitations. Section~\ref{sec:conclusion} concludes.
+
+% ============================================================
+% II. BACKGROUND
+% ============================================================
+\section{Background}
+\label{sec:background}
+
+\subsection{IEEE 802.11 Management Frames}
+
+The IEEE 802.11 protocol defines three frame types: data frames (carrying user payload), control frames (facilitating medium access), and management frames (establishing and maintaining connections). Management frames include beacon, probe request/response, authentication, association, and deauthentication subtypes. In the standard frame format, the Frame Control field's subtype bits identify the frame purpose: subtype 0x0C indicates a deauthentication frame, while 0x0A indicates disassociation.
+
+Critically, management frames in pre-802.11w networks carry no integrity protection or encryption. Any device within radio range can observe, forge, or replay these frames without possessing the network's encryption key. This design decision, made for backward compatibility, creates a fundamental vulnerability exploitable by deauthentication attacks.
+
+\subsection{Deauthentication Attack Mechanism}
+
+A deauthentication attack proceeds as follows: the attacker places a wireless interface in monitor mode, observes the channel to identify active access points and associated clients, then transmits forged deauthentication frames with the source address spoofed to match the target AP's BSSID. The frame includes a reason code (e.g., reason 7: ``Class 3 frame received from non-associated station'') that the receiving client treats as legitimate, causing immediate disconnection.
+
+The attack is effective because:
+\begin{itemize}
+    \item No authentication is required to send management frames
+    \item Clients must honor deauthentication frames per the standard
+    \item The spoofed source MAC address prevents trivial identification of the true attacker
+    \item Repeated deauthentication prevents reconnection, creating sustained denial of service
+\end{itemize}
+
+\subsection{Protected Management Frames (802.11w/PMF)}
+
+IEEE 802.11w (2009), later incorporated into the main standard, introduces Protected Management Frames using the existing security association. When PMF is negotiated, unicast management frames are encrypted, and broadcast management frames include a Message Integrity Check. WPA3 mandates PMF support. However, adoption remains limited: many legacy devices lack support, mixed-mode networks often disable PMF for compatibility, and even when available, broadcast deauthentication frames can still be observed (though not successfully acted upon by PMF-capable clients). Until PMF achieves universal deployment, detection-based approaches remain necessary.
+
+\subsection{Pwnagotchi: An Automated Attacker}
+
+Pwnagotchi~\cite{pwnagotchi} is an AI-powered Wi-Fi auditing tool built on a Raspberry Pi Zero W. It autonomously identifies nearby access points, selects targets, sends deauthentication frames to capture WPA handshakes, and uses reinforcement learning to optimize its capture strategy over time. Unlike manual tools such as \texttt{aireplay-ng} that send continuous floods at fixed rates, Pwnagotchi exhibits semi-random timing, channel hopping, and target selection that more closely resembles a sophisticated real-world attacker. This makes it an ideal test platform for evaluating detection robustness.
+
+% ============================================================
+% III. RELATED WORK
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Academic Detection Approaches}
+
+The academic literature on Wi-Fi deauthentication detection remains sparse compared to general network intrusion detection. We identify four directly relevant studies:
+
+\textbf{Hybrid Deep Learning on ESP8266}~\cite{nature2025_deauth}: The most recent work deploys a CNN-LSTM model on a NodeMCU (ESP8266) platform, achieving high accuracy on synthetic deauthentication traffic. However, the evaluation uses generated traffic rather than real attacks, reports only accuracy without detection latency or resource consumption, and does not analyze evasion scenarios.
+
+\textbf{Threshold Detection on ESP8266}~\cite{ijert2024_deauth}: This work implements basic frame-count threshold detection on an ESP8266, demonstrating feasibility of on-device detection. The evaluation is minimal: a single attack scenario with no false positive analysis, no comparison with alternative approaches, and no characterization of the threshold's sensitivity to attack intensity.
+
+\textbf{ML Detection on Standard Hardware}~\cite{ieee2023_deauth_ml}: Using machine learning classifiers (Random Forest, SVM) on laptop hardware, this study achieves high detection accuracy on captured datasets. While methodologically sound, the approach is not applicable to resource-constrained environments---the models require hundreds of megabytes of RAM and seconds of processing time per classification window.
+
+\textbf{Software-Defined Testbed}~\cite{arxiv2025_deauth_testbed}: Recent work presents a testbed for quantifying deauthentication resilience in modern Wi-Fi networks, focusing on the network's response rather than on-device detection. This complements our work by characterizing the attack surface we aim to defend.
+
+\subsection{Hobbyist and Open-Source Tools}
+
+Several open-source projects implement deauthentication detection without academic evaluation:
+
+\begin{itemize}
+    \item \textbf{SpacehuhnTech DeauthDetector}~\cite{spacehuhn_detector}: ESP8266-based, triggers an LED when deauthentication frame rate exceeds a fixed threshold. No logging, no statistical analysis, no evaluation.
+    \item \textbf{Deauthalyzer}: Python-based packet analyzer for Linux systems that identifies deauthentication attacks. No comparative evaluation or metrics.
+    \item \textbf{BriarIDS}: Raspberry Pi-based home IDS with broad scope (not specialized for deauthentication).
+\end{itemize}
+
+These tools demonstrate community interest but lack the systematic evaluation needed to understand detection tradeoffs.
+
+\subsection{Gap Analysis}
+
+Table~\ref{tab:gap_analysis} summarizes the limitations of existing work that our study addresses.
+
+\begin{table}[htbp]
+\caption{Gap Analysis: Existing Work vs. Our Approach}
+\label{tab:gap_analysis}
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Criterion} & \rotatebox{90}{\cite{nature2025_deauth}} & \rotatebox{90}{\cite{ijert2024_deauth}} & \rotatebox{90}{\cite{ieee2023_deauth_ml}} & \rotatebox{90}{\cite{spacehuhn_detector}} & \rotatebox{90}{\textbf{Ours}} \\
+\midrule
+Real attacker testing & \texttimes & \texttimes & \texttimes & \texttimes & \checkmark \\
+Comparative approaches & \texttimes & \texttimes & \texttimes & \texttimes & \checkmark \\
+Evasion analysis & \texttimes & \texttimes & \texttimes & \texttimes & \checkmark \\
+Detection latency & \texttimes & \texttimes & \texttimes & \texttimes & \checkmark \\
+Resource measurement & \texttimes & \texttimes & \texttimes & \texttimes & \checkmark \\
+Constrained hardware & \checkmark & \checkmark & \texttimes & \checkmark & \checkmark \\
+False positive analysis & \texttimes & \texttimes & \checkmark & \texttimes & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+% IV. SYSTEM DESIGN
+% ============================================================
+\section{System Design}
+\label{sec:design}
+
+\subsection{Architecture Overview}
+
+Our detection system operates as a passive monitor: a wireless interface in promiscuous/monitor mode captures all 802.11 frames on a configured channel. The detector filters for management frame subtypes 0x0C (deauthentication) and 0x0A (disassociation), extracts metadata (source MAC, destination MAC, BSSID, reason code, timestamp), and feeds this information to one or more detection engines operating over a sliding time window.
+
+Fig.~\ref{fig:architecture} illustrates the system architecture.
+
+\begin{figure}[htbp]
+\centering
+\placeholder{Insert architecture diagram showing: Radio -> Frame Filter -> Feature Extraction -> Detection Engines (Threshold / Statistical) -> Alert Output + CSV Logging}
+\caption{System architecture for deauthentication detection.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Detection Approach 1: Threshold-Based}
+
+The threshold detector implements the simplest possible detection logic: if the number of deauthentication/disassociation frames observed within a sliding window of $W$ seconds exceeds a count threshold $T$, an alert is raised.
+
+\begin{equation}
+\text{alert}(t) =
+\begin{cases}
+1 & \text{if } \sum_{i=t-W}^{t} f_i \geq T \\
+0 & \text{otherwise}
+\end{cases}
+\end{equation}
+
+where $f_i$ is 1 if frame $i$ is a deauthentication or disassociation frame, and 0 otherwise.
+
+\textbf{Parameters:} We use $W = 5$ seconds and $T = 10$ frames, derived from the observation that legitimate APs typically send at most 1--2 deauthentication frames in any 5-second window (e.g., when a client roams or disconnects), while attack tools generate tens to hundreds per second.
+
+\textbf{Implementation:} A double-ended queue stores timestamps of recent deauthentication frames. On each new frame, expired entries (older than $W$ seconds) are removed, and the queue length is compared against $T$. Time complexity is $O(1)$ amortized; space is bounded by at most $T$ entries.
+
+\textbf{Strengths:} Deterministic, zero warm-up time, minimal resource usage, trivial to implement on microcontrollers.
+
+\textbf{Weaknesses:} Fixed threshold cannot adapt to environments with varying baseline deauthentication traffic. Susceptible to evasion by attackers who stay below $T/W$ frames per second.
+
+\subsection{Detection Approach 2: Statistical (Z-Score)}
+
+The statistical detector builds a rolling model of ``normal'' deauthentication frame rates and detects anomalies as deviations from this baseline. It operates in two phases:
+
+\textbf{Baseline Phase:} For the first $N$ windows (each of $W$ seconds), the detector records the frame count per window without alerting. This builds a baseline distribution of normal deauthentication rates.
+
+\textbf{Detection Phase:} For each subsequent window, the detector computes the z-score of the current window's count relative to the baseline:
+
+\begin{equation}
+z = \frac{c_{\text{current}} - \mu}{\sigma}
+\end{equation}
+
+where $c_{\text{current}}$ is the deauthentication frame count in the current window, $\mu$ is the mean of the baseline window counts, and $\sigma$ is the standard deviation. An alert is raised if $z \geq z_{\text{threshold}}$.
+
+\textbf{Parameters:} We use $W = 5$ seconds, $N = 20$ baseline windows (100 seconds of warm-up), and $z_{\text{threshold}} = 3.0$. The baseline is maintained as a rolling buffer of the most recent $N$ window counts, allowing adaptation to gradual environmental changes.
+
+\textbf{Edge case:} When $\sigma = 0$ (perfectly consistent baseline), any count exceeding $\mu + 1$ triggers an alert.
+
+\textbf{Strengths:} Adapts to the deployment environment, fewer false positives in networks with naturally variable management frame traffic, statistically principled threshold.
+
+\textbf{Weaknesses:} Requires warm-up period during which attacks cannot be detected. Slow-ramp attacks that gradually increase intensity may shift the baseline without triggering detection.
+
+\subsection{Platform Implementations}
+
+\subsubsection{Raspberry Pi (Python/Scapy)}
+
+The RPi implementation uses Python 3 with the Scapy library for packet capture and dissection. The wireless interface (external USB adapter with chipset supporting monitor mode) is configured via \texttt{airmon-ng}. Both detection engines run concurrently, processing each captured frame. Results are logged to CSV with per-frame metadata including timestamps, source/destination MACs, reason codes, and per-engine alert status.
+
+\subsubsection{ESP32 (C/Arduino)}
+
+The ESP32 implementation uses the Espressif IDF WiFi API in promiscuous mode. A callback function (\texttt{esp\_wifi\_set\_promiscuous\_rx\_cb}) receives every frame, filtering by the subtype field in the frame control byte. Detection logic mirrors the RPi implementation but operates within the constraints of the ESP32's single-threaded Arduino environment. Results are output via serial at each window boundary.
+
+% ============================================================
+% V. EXPERIMENTAL SETUP
+% ============================================================
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Hardware Configuration}
+
+Table~\ref{tab:hardware} details the hardware used in our experiments.
+
+\begin{table}[htbp]
+\caption{Hardware Configuration}
+\label{tab:hardware}
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Device} & \textbf{Role} & \textbf{Specifications} \\
+\midrule
+RPi Zero W v1 & Attacker & BCM2835, 512MB RAM, \\
+ & (Pwnagotchi) & built-in Wi-Fi \\
+RPi Zero W v2 & Detector & BCM2710A1, 512MB RAM, \\
+ & (Platform 1) & USB Wi-Fi adapter \\
+ESP32-WROOM-32D & Detector & Xtensa LX6 240MHz, \\
+ & (Platform 2) & 520KB SRAM, built-in Wi-Fi \\
+AirPort Extreme & Target AP & 802.11ac, isolated from \\
+ & & ISP router \\
+\placeholder{Phone model} & Victim & Connected to AirPort \\
+ & client & Extreme \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Network Topology}
+
+The experimental network is isolated from production internet connectivity. An Apple AirPort Extreme serves as the target access point, with a smartphone connected as the victim client. The Pwnagotchi (RPi Zero W v1) operates as the attacker on a separate interface. Both detector platforms (RPi Zero W v2 and ESP32) are positioned within radio range to capture all deauthentication frames on the target channel.
+
+\begin{figure}[htbp]
+\centering
+\placeholder{Insert network topology diagram}
+\caption{Experimental network topology.}
+\label{fig:topology}
+\end{figure}
+
+\subsection{Test Scenarios}
+
+We define five test scenarios (Table~\ref{tab:tests}) designed to evaluate detection performance across the full spectrum of attack intensities, including a no-attack baseline and a busy-network scenario for false positive characterization.
+
+\begin{table}[htbp]
+\caption{Test Scenarios}
+\label{tab:tests}
+\centering
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+\textbf{ID} & \textbf{Attack Tool} & \textbf{Intensity} & \textbf{Purpose} \\
+\midrule
+T1 & Pwnagotchi (auto) & High & Detection rate, \\
+ & & (many frames/s) & latency \\
+T2 & \texttt{aireplay-ng} & Medium & Detection at \\
+ & \texttt{--deauth 5} & (5 frames burst) & moderate load \\
+T3 & \texttt{aireplay-ng} & Low (1 frame & Evasion \\
+ & \texttt{--deauth 1} (slow) & every few sec) & boundary \\
+T4 & None & None & False positive \\
+ & & & rate (quiet) \\
+T5 & None (busy & None (but & False positive \\
+ & network traffic) & noisy channel) & rate (noisy) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evasion Characterization}
+
+Beyond the discrete test scenarios, we conduct a sweep of attack rates to identify the precise evasion threshold for each detector. Starting at 20 deauthentication frames per second (easily detected), we progressively reduce the rate: 15, 10, 8, 5, 3, 2, 1, 0.5 frames per second. For each rate, we run a 60-second trial and record whether detection occurs and the latency to first alert.
+
+\subsection{Metrics}
+
+We report five metrics for each (detector, platform, scenario) combination:
+
+\begin{enumerate}
+    \item \textbf{Detection Rate (DR):} $\text{TP} / (\text{TP} + \text{FN})$ --- proportion of attack windows correctly identified.
+    \item \textbf{False Positive Rate (FPR):} $\text{FP} / (\text{FP} + \text{TN})$ --- proportion of non-attack windows incorrectly flagged.
+    \item \textbf{Detection Latency:} Time in seconds from the first deauthentication frame of an attack to the first alert.
+    \item \textbf{Evasion Threshold:} Minimum frames per second that still triggers detection within a 30-second observation window.
+    \item \textbf{Resource Usage:} CPU utilization (\%) and RAM consumption (MB) measured via \texttt{psutil} (RPi) and serial heap reporting (ESP32).
+\end{enumerate}
+
+% ============================================================
+% VI. RESULTS
+% ============================================================
+\section{Results}
+\label{sec:results}
+
+\placeholder{This section will be populated with experimental results after running the test matrix.}
+
+\subsection{Detection Rate and Latency}
+
+Table~\ref{tab:results_main} presents the detection rate and latency for each detector across all test scenarios on both platforms.
+
+\begin{table}[htbp]
+\caption{Detection Rate and Latency by Scenario and Platform}
+\label{tab:results_main}
+\centering
+\small
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{Platform} & \textbf{Detector} & \textbf{T1 DR} & \textbf{T1 Lat.} & \textbf{T2 DR} & \textbf{T2 Lat.} \\
+\midrule
+RPi & Threshold & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
+RPi & Statistical & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
+ESP32 & Threshold & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
+ESP32 & Statistical & \placeholder{} & \placeholder{} & \placeholder{} & \placeholder{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{False Positive Analysis}
+
+\begin{table}[htbp]
+\caption{False Positive Rates (T4: Quiet, T5: Busy Network)}
+\label{tab:fp}
+\centering
+\small
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Platform} & \textbf{Detector} & \textbf{T4 FPR} & \textbf{T5 FPR} \\
+\midrule
+RPi & Threshold & \placeholder{} & \placeholder{} \\
+RPi & Statistical & \placeholder{} & \placeholder{} \\
+ESP32 & Threshold & \placeholder{} & \placeholder{} \\
+ESP32 & Statistical & \placeholder{} & \placeholder{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evasion Boundary}
+
+\begin{figure}[htbp]
+\centering
+\placeholder{Insert figure: Detection success (y-axis, binary or rate) vs. attack rate in frames/sec (x-axis), one line per detector/platform. Shows where each approach fails.}
+\caption{Evasion boundary: detection success vs.\ attack rate.}
+\label{fig:evasion}
+\end{figure}
+
+\placeholder{Describe the evasion threshold for each detector. At what frames/sec does each approach stop detecting? How does this compare between platforms?}
+
+\subsection{Resource Consumption}
+
+\begin{table}[htbp]
+\caption{Resource Usage During T1 (High-Intensity Attack)}
+\label{tab:resources}
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Platform} & \textbf{CPU (\%)} & \textbf{RAM (MB)} \\
+\midrule
+RPi (Python/Scapy) & \placeholder{} & \placeholder{} \\
+ESP32 (C/Arduino) & \placeholder{} & \placeholder{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\placeholder{Discuss resource consumption differences between platforms. How does Scapy's overhead compare to native C? Is the ESP32's limited RAM a constraint?}
+
+% ============================================================
+% VII. DISCUSSION
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Threshold vs. Statistical: When to Use Which}
+
+\placeholder{Based on results, discuss: threshold is better when X (e.g., immediate detection needed, low resource budget, simple deployment). Statistical is better when Y (e.g., noisy environments, adaptive baseline needed). Both fail against Z (very slow attacks below evasion threshold).}
+
+\subsection{Platform Comparison: RPi vs. ESP32}
+
+\placeholder{Discuss tradeoffs. RPi advantages: easier to develop, richer logging, more RAM for future ML approaches. ESP32 advantages: lower cost, lower power consumption, smaller form factor. Detection performance should be comparable since both see the same frames -- differences come from processing overhead and timing precision.}
+
+\subsection{Practical Deployment Considerations}
+
+Detection alone is insufficient for operational security. A complete system requires:
+\begin{itemize}
+    \item \textbf{Alerting:} Notification via LED, buzzer, network message, or push notification
+    \item \textbf{Channel coverage:} Our single-channel monitor misses attacks on other channels; multi-channel scanning or multiple detectors address this
+    \item \textbf{Response:} Potential automated responses include client notification, AP channel switching, or PMF enforcement
+    \item \textbf{Power:} Battery-powered deployment is feasible on ESP32 given its low consumption
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{enumerate}
+    \item \textbf{Single channel:} Our detector monitors one channel at a time. A multi-channel scanner would address this but at reduced per-channel dwell time.
+    \item \textbf{Single AP:} Testing was conducted against one access point. Environments with multiple APs may exhibit different baseline deauthentication patterns.
+    \item \textbf{Pwnagotchi-specific:} While Pwnagotchi represents a realistic attacker, other tools (ESP8266 Deauther, custom scripts) may exhibit different timing profiles.
+    \item \textbf{No ML comparison:} Resource constraints precluded ML-based detection in this phase; we reserve this for future work.
+    \item \textbf{Indoor environment:} All tests conducted in a single indoor environment. Outdoor or high-density environments may differ.
+\end{enumerate}
+
+% ============================================================
+% VIII. CONCLUSION AND FUTURE WORK
+% ============================================================
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+We presented the first comparative evaluation of Wi-Fi deauthentication detection approaches on low-cost hardware, tested against a real automated attacker under controlled conditions. Our evaluation of threshold-based and statistical (z-score) detection on both Raspberry Pi and ESP32 platforms reveals \placeholder{key insight from results}. We characterized the evasion boundary for each approach, providing practical guidance on the minimum attack intensity these methods can detect.
+
+\placeholder{1-2 sentences summarizing the most important quantitative result.}
+
+Our open-source implementation enables reproducibility and provides a foundation for future extensions.
+
+\subsection{Future Work}
+
+Several directions extend this work:
+
+\begin{itemize}
+    \item \textbf{Adaptive thresholds via reinforcement learning:} An RL agent could dynamically adjust detection parameters based on environmental feedback, potentially closing the gap between threshold and statistical approaches while maintaining low latency.
+    \item \textbf{Feature-based ML detection:} Extracting richer features per window---target MAC diversity, reason code entropy, burst duration, sequence number gaps---and training lightweight decision trees could improve evasion resistance while remaining feasible on ESP32.
+    \item \textbf{Multi-channel scanning:} Implementing rapid channel hopping with per-channel state tracking to provide full-spectrum coverage.
+    \item \textbf{Cross-attack detection:} Extending beyond deauthentication to detect related attacks (evil twin, beacon flooding, PMKID capture) using the same hardware platform.
+    \item \textbf{Power consumption analysis:} Battery life measurement for continuous deployment scenarios.
+\end{itemize}
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
