@@ -2,6 +2,7 @@
 
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
 \usepackage{algorithmic}
 \usepackage{graphicx}
 \usepackage{textcomp}
@@ -176,7 +177,7 @@ The detector runs as a passive sniffer. A wireless interface in monitor mode (RP
 
 \begin{figure}[htbp]
 \centering
-\placeholder{Architecture diagram: Wi-Fi Radio -> Monitor/Promiscuous Mode -> Frame Filter (subtype 0x0C/0x0A) -> Feature Extraction -> Threshold Engine + Statistical Engine -> Alert + CSV Log}
+\placeholder{Architecture diagram showing data flow from radio to alert output.}
 \caption{Detection system architecture.}
 \label{fig:architecture}
 \end{figure}
@@ -220,44 +221,43 @@ The advantage over threshold detection is adaptability---a noisy environment wit
 
 Algorithm~\ref{alg:detection} shows the combined detection procedure. Each incoming frame is checked against both engines in sequence; the CSV log records per-frame state regardless of whether an alert fires.
 
-\begin{figure}[htbp]
+\begin{algorithm}[htbp]
+\caption{Combined threshold and statistical detection.}
+\label{alg:detection}
 \begin{algorithmic}[1]
 \STATE \textbf{Input:} stream of 802.11 frames on monitored channel
-\STATE \textbf{Parameters:} $W$ (window size), $T$ (threshold count), $N$ (baseline windows), $z_\text{thr}$ (z-score threshold)
-\STATE Initialize deque $Q \leftarrow \emptyset$, baseline buffer $B \leftarrow \emptyset$, window counter $c \leftarrow 0$, window start $t_w \leftarrow$ now
+\STATE \textbf{Parameters:} $W$ (window), $T$ (threshold), $N$ (baseline windows), $z_\text{thr}$ (z-score threshold)
+\STATE Init: deque $Q \leftarrow \emptyset$, buffer $B \leftarrow \emptyset$, counter $c \leftarrow 0$, $t_w \leftarrow$ now
 \FOR{each frame $f$}
-    \IF{$f$.subtype $\notin$ \{0x0C, 0x0A\}}
+    \IF{$f$.subtype $\notin \{$0x0C, 0x0A$\}$}
         \STATE \textbf{continue}
     \ENDIF
     \STATE $t \leftarrow$ timestamp of $f$
-    \STATE \textit{// --- Threshold engine ---}
+    \STATE \textit{// Threshold engine}
     \STATE Append $t$ to $Q$
     \WHILE{$Q$.front $< t - W$}
         \STATE Remove front of $Q$
     \ENDWHILE
     \STATE $\text{alert}_\text{thr} \leftarrow (|Q| \geq T)$
-    \STATE \textit{// --- Statistical engine ---}
+    \STATE \textit{// Statistical engine}
     \STATE $c \leftarrow c + 1$
     \IF{$t - t_w \geq W$}
-        \STATE Append $c$ to $B$ (rolling buffer, max size $N$)
-        \STATE $c \leftarrow 0$;\; $t_w \leftarrow t$
+        \STATE Append $c$ to $B$ (rolling, max $N$); $c \leftarrow 0$; $t_w \leftarrow t$
     \ENDIF
     \IF{$|B| \geq N$}
-        \STATE $\mu \leftarrow \text{mean}(B)$;\; $\sigma \leftarrow \text{std}(B)$
+        \STATE $\mu \leftarrow \text{mean}(B)$; $\sigma \leftarrow \text{std}(B)$
         \IF{$\sigma = 0$}
             \STATE $\text{alert}_z \leftarrow (c > \mu + 1)$
         \ELSE
-            \STATE $\text{alert}_z \leftarrow \left(\frac{c - \mu}{\sigma} \geq z_\text{thr}\right)$
+            \STATE $\text{alert}_z \leftarrow ((c - \mu)/\sigma \geq z_\text{thr})$
         \ENDIF
     \ELSE
-        \STATE $\text{alert}_z \leftarrow$ false \hfill \textit{// still in baseline phase}
+        \STATE $\text{alert}_z \leftarrow$ false
     \ENDIF
-    \STATE Log $(t, f.\text{src}, f.\text{dst}, f.\text{reason}, \text{alert}_\text{thr}, \text{alert}_z)$ to CSV
+    \STATE Log $(t,\; f.\text{src},\; f.\text{dst},\; f.\text{reason},\; \text{alert}_\text{thr},\; \text{alert}_z)$
 \ENDFOR
 \end{algorithmic}
-\caption{Combined threshold and statistical detection.}
-\label{alg:detection}
-\end{figure}
+\end{algorithm}
 
 The algorithm runs in $O(1)$ amortized time per frame for both engines. The threshold engine's deque operations are bounded by the eviction loop (at most $T$ entries at any time). The statistical engine performs a fixed-size mean and standard deviation over $N$ values only at window boundaries, not per frame. Peak memory on the ESP32 is $T \times 4$ bytes (timestamps in the deque) plus $N \times 4$ bytes (baseline buffer)---under 200 bytes with our parameters.
 
@@ -415,12 +415,12 @@ ESP32 & Statistical & \placeholder{} & \placeholder{} \\
 
 \begin{figure}[htbp]
 \centering
-\placeholder{Plot: x-axis = attack rate (frames/sec, log scale), y-axis = detected (yes/no). One line per detector. Shows the crossover point where detection fails.}
+\placeholder{Evasion boundary plot: x-axis attack rate, y-axis detection success, one line per detector.}
 \caption{Detection success as a function of attack rate.}
 \label{fig:evasion}
 \end{figure}
 
-\placeholder{Describe the evasion threshold for each detector. Expected: the threshold detector fails below 2 frames/sec (10 frames / 5 sec window), the statistical detector may catch slightly lower rates depending on baseline noise.}
+\placeholder{Describe evasion threshold for each detector and compare between platforms.}
 
 \subsection{Resource Usage}
 
@@ -439,7 +439,7 @@ ESP32 (C/Arduino) & \placeholder{} & \placeholder{} \\
 \end{tabular}
 \end{table}
 
-\placeholder{Discuss: Python/Scapy on RPi likely uses significantly more CPU and RAM than native C on ESP32. Quantify the overhead of the high-level language approach vs. the development speed tradeoff.}
+\placeholder{Discuss resource consumption differences between RPi and ESP32.}
 
 \subsection{Comparison with Prior Work}
 
@@ -464,7 +464,7 @@ Hardware Cost & \$3 (ESP8266) & \$3 (ESP8266) & \$5--15 \\
 \end{tabular}
 \end{table}
 
-\placeholder{Discuss what this comparison shows. Key point: prior work reports high accuracy numbers but under conditions that do not stress the detector---synthetic traffic at full intensity with no evasion. Our lower-intensity tests reveal the realistic operating envelope.}
+\placeholder{Discuss what this comparison shows---prior work reports high accuracy under easy conditions only.}
 
 % ============================================================
 % VII. DISCUSSION
@@ -474,23 +474,26 @@ Hardware Cost & \$3 (ESP8266) & \$3 (ESP8266) & \$5--15 \\
 
 \subsection{Threshold vs. Statistical}
 
-\placeholder{Based on actual results. Expected discussion points:
+% WRITING GUIDE (to be replaced with actual prose after experiments):
+% - Threshold advantage: immediacy, no warm-up, alerts from first second.
+%   Suits deployments where a clean baseline can't be established.
+%   Weakness: rigid, can't distinguish busy network from slow attacker.
+% - Statistical advantage: handles noisy environments, learns normal.
+%   Weakness: 100s blind spot at startup; slow-ramp attacks can poison baseline.
+% - Both fail below ~X frames/sec (hard limit of rate-based detection).
 
-The threshold detector's main advantage is immediacy---no warm-up, alerts from the first second. It suits deployments where a known-clean baseline cannot be established (e.g., a detector placed into an unfamiliar network). Its main weakness is rigidity: it cannot tell the difference between a busy legitimate network and a slow attacker.
-
-The statistical detector handles noisy environments better because it learns what normal looks like. But the 100-second blind spot is a real operational issue---an attacker who strikes immediately after the detector powers on will not be caught. The rolling baseline also creates a subtle vulnerability: a patient attacker who gradually increases the deauth rate over many windows can shift the mean upward without ever triggering the z-score threshold.
-
-Neither approach detects attacks below approximately X frames/sec. This is a hard limit of any rate-based detection---at low enough rates, attack traffic is indistinguishable from legitimate deauthentications.}
+\placeholder{Fill after experiments: compare threshold vs statistical based on actual numbers.}
 
 \subsection{RPi vs. ESP32}
 
-\placeholder{Expected discussion:
+% WRITING GUIDE (to be replaced with actual prose after experiments):
+% - Both see same traffic, same detection logic -> detection rates should match.
+% - Differences are in resource usage and deployment:
+%   RPi: easier dev (Python, SSH, filesystem), more power, more RAM for future ML.
+%   ESP32: cheaper, smaller, low power (battery-viable), harder dev (C, serial).
+% - Conclusion: ESP32 for "set and forget" deployment, RPi for research platform.
 
-Both platforms see the same radio traffic and run equivalent detection logic, so detection rates should be identical or very close. Differences will show up in resource usage and in practical deployment concerns:
-
-The RPi is easier to develop for (Python, standard Linux tooling, SSH access, filesystem logging), uses more power, costs more, but has headroom for future ML-based approaches. The ESP32 is cheaper, smaller, uses minimal power (suitable for battery deployment), but development is harder (C, serial debugging, limited logging) and RAM limits future extensions.
-
-For a ``set and forget'' detector on a shelf, the ESP32 is better. For a research platform that will evolve, the RPi is better.}
+\placeholder{Fill after experiments: compare platforms based on actual resource measurements.}
 
 \subsection{Deployment Considerations}
 
@@ -520,7 +523,7 @@ This work has several limitations that scope its conclusions:
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-We compared threshold and statistical deauthentication detection on a Raspberry Pi Zero W and an ESP32, testing against a real Pwnagotchi attacker under five scenarios including controlled evasion attempts. \placeholder{Key quantitative finding: e.g., ``Both detectors achieved 100\% detection at rates above X frames/sec, but the statistical approach maintained detection down to Y frames/sec compared to Z for the threshold approach.''} \placeholder{Second finding on false positives or resource usage.}
+We compared threshold and statistical deauthentication detection on a Raspberry Pi Zero W and an ESP32, testing against a real Pwnagotchi attacker under five scenarios including controlled evasion attempts. \placeholder{Key quantitative finding.} \placeholder{Second finding on false positives or resource usage.}
 
 The evasion analysis shows that purely rate-based detection has a hard floor: below a certain attack intensity, the traffic looks indistinguishable from normal network behavior. This motivates future work on feature-rich detection that considers not just frame counts but target diversity, reason code patterns, and timing regularity.
 
