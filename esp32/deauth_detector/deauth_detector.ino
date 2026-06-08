@@ -11,9 +11,9 @@
 #define BASELINE_WINDOWS 12
 
 // --- State ---
-int window_count = 0;
+volatile int window_count = 0;
 unsigned long window_start = 0;
-int total_deauths = 0;
+volatile int total_deauths = 0;
 
 float history[BASELINE_WINDOWS] = {0};
 int history_idx = 0;
@@ -62,9 +62,12 @@ void check_window() {
     Serial.printf("%lu,%d,%d,%d,%.2f,%d\n",
                   millis(), window_count, total_deauths, thresh_alert, z, z_alert);
 
-    history[history_idx] = window_count;
-    history_idx = (history_idx + 1) % BASELINE_WINDOWS;
-    if (history_idx == 0) history_filled = 1;
+    // Only update baseline from clean (non-attack) windows to prevent poisoning
+    if (!thresh_alert && !z_alert) {
+        history[history_idx] = window_count;
+        history_idx = (history_idx + 1) % BASELINE_WINDOWS;
+        if (history_idx == 0) history_filled = 1;
+    }
 
     window_count = 0;
     window_start = now;
